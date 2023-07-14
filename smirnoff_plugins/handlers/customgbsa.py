@@ -216,7 +216,7 @@ class CustomGBSAHandler(ParameterHandler):
     # This is where we define all the keywords that may be defined in the section header in the OFFXML
 
     gb_model = ParameterAttribute(
-        converter=_allow_only(["HCT", "OBC", "GBn", "GBn2", "MKG"])
+        converter=_allow_only(["HCT", "OBC", "GBn", "GBn2", "MKG", "OBC_Logistic"])
     )
 
     # Global parameters for effective radii (ignored in HCT and GBn2 models)
@@ -263,6 +263,13 @@ class CustomGBSAHandler(ParameterHandler):
     mkg_width2 = ParameterAttribute(default=0.4, unit=unit.nanometer**2)
     mkg_scale = ParameterAttribute(default=0.5, converter=float)
 
+    # Additional parameters for OBC_Logistic
+    # A = ParameterAttribute(default=None, unit=unit.nanometer) # Currently fixed
+    # K = ParameterAttribute(default=None, unit=unit.nanometer) # Currently fixed
+    nu = ParameterAttribute(default=1.0, converter=float)       # Currently free
+    b = ParameterAttribute(default=10.0, converter=float)       # Currently free
+    inflec = ParameterAttribute(default=0.5, converter=float)   # Currently free
+
     # Tolerance when comparing float attributes for handler compatibility.
     _SCALETOL = 1e-5
 
@@ -291,6 +298,11 @@ class CustomGBSAHandler(ParameterHandler):
             "mkg_mag",
             "mkg_power",
             "mkg_scale",
+            # "A",
+            # "K",
+            "nu",
+            "b",
+            "inflec",
         ]
         string_attrs_to_compare = ["sa_model", "mkg_width2"]
         unit_attrs_to_compare = [
@@ -323,6 +335,11 @@ class CustomGBSAHandler(ParameterHandler):
         mkg_power: float,
         mkg_width2: unit.Quantity,
         mkg_scale: float,
+        # A: float,
+        # K: float,
+        nu: float,
+        b: float,
+        inflec: float,
     ):
         """Add the GBSA energy terms to the CustomGBForce. These are identical for all the Amber-based GB models."""
 
@@ -394,6 +411,19 @@ class CustomGBSAHandler(ParameterHandler):
                         + params,
                         openmm.CustomGBForce.ParticlePairNoExclusions,
                     )
+
+                # This is currently redundant but written explicitly if future changes need to be made to the kernel
+                elif model == "OBC_Logistic":
+                    fgb_kernel = "f=sqrt(r^2 + B1*B2*exp(-r^2/(4*B1*B2))); solventDielectric=78.5; soluteDielectric=1; surface_area_penalty=2.25936;"
+                    fgb_kernel += "solvent_radius=0.14; kappa=0; offset_radius=0.009; PI=3.141592653589793; ONE_4PI_EPS0=138.935485;"
+                    
+                    force.addEnergyTerm(
+                        "-ONE_4PI_EPS0*(1/soluteDielectric-1/solventDielectric)*charge1*charge2/f;"
+                        + fgb_kernel
+                        + params,
+                        openmm.CustomGBForce.ParticlePairNoExclusions,
+                    )
+                    
                 else:
                     force.addEnergyTerm(
                         "-ONE_4PI_EPS0*(1/soluteDielectric-1/solventDielectric)*charge1*charge2/f;"
@@ -531,6 +561,13 @@ class CustomGBSAHandler(ParameterHandler):
         # Effective radius
         if self.gb_model == "HCT":
             effective_radii = ["1/(1/or-I)"]
+        elif self.gb_model == "OBC_Logistic":
+            effective_radii = [
+                "logistic_curve;",
+                f"logistic_curve=(A+(K-A)/((1+nu*exp(b*(inflec-psi)))^(1/nu)));", # LaTeX: R_{eff}(\Psi)=A+\frac{K-A}{(1+\nu e^{B(\Psi_{inflec}-\Psi)})^{1/\nu}}
+                f"A=radius; K=((radius^2)/offset)-radius; nu={self.nu}; b={self.b}; inflec={self.inflec};",
+                f"psi=I*or; radius=or+offset; offset={self.offset_radius.value_in_unit(unit.nanometer)};",
+            ]
         else:
             effective_radii = [
                 "1/(1/or-tanh(alpha*psi-beta*psi^2+gamma*psi^3)/radius); ",
@@ -581,6 +618,11 @@ class CustomGBSAHandler(ParameterHandler):
             self.mkg_power,
             self.mkg_width2,
             self.mkg_scale,
+            # self.A,
+            # self.K,
+            self.nu,
+            self.b,
+            self.inflec,
         )
 
         # Iterate over all defined GBSA types, allowing later matches to override earlier ones.
